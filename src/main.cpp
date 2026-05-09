@@ -7,6 +7,7 @@
 #include "server.hpp"
 #include "request.hpp"
 #include "router.hpp"
+#include "threadpool.hpp"
 
 int main(int argc, char **argv) {
     // Flush after every std::cout / std::cerr
@@ -20,20 +21,17 @@ int main(int argc, char **argv) {
         break;
       }
     }
-    // You can use print statements as follows for debugging, they'll be visible when running tests.
     std::cout << "Logs from your program will appear here!\n";
 
     // Create server socket, bind to port 4221, and start listening
     int server_fd = create_server(4221);
     if (server_fd < 0) return 1;
 
-    std::cout << "Waiting for a clients to connect...\n";
-    
-    while(true){
-      // Block until a client connects, returns client socket fd
-      int client_fd = accept_client(server_fd);
-      std::cout << "Client connected\n";
-      std::thread([client_fd, directory_path](){
+    // Pre-spawn a fixed number of worker threads
+    ThreadPool pool(4);
+
+    // Define how each worker handles a client connection
+    pool.client_handler = [directory_path](int client_fd) {
         while(true){
           // Read the raw HTTP request from the client into buffer
           char buffer[4096];
@@ -65,8 +63,17 @@ int main(int argc, char **argv) {
           if(should_close) break;
         }
         close(client_fd);
-      }).detach();
+    };
+
+    std::cout << "Waiting for clients to connect...\n";
+
+    while(true){
+      // Block until a client connects, then hand off to the thread pool
+      int client_fd = accept_client(server_fd);
+      std::cout << "Client connected\n";
+      pool.enqueue(client_fd);
     }
+
     close(server_fd);
     return 0;
 }
