@@ -8,7 +8,7 @@ A from-scratch HTTP/1.1 server built in C++, No frameworks, no abstractions — 
 
 - HTTP/1.1 compliant responses
 - Persistent connections (`Connection: keep-alive` / `Connection: close`)
-- Concurrent connections via `std::thread` (one thread per client)
+- Concurrent connections via thread pool (fixed worker threads, task queue)
 - gzip compression via zlib (`Accept-Encoding: gzip`)
 - Multiple compression scheme negotiation
 - File serving (`GET /files/{name}`)
@@ -21,11 +21,12 @@ A from-scratch HTTP/1.1 server built in C++, No frameworks, no abstractions — 
 
 ```
 src/
-├── main.cpp        — Entry point: parses CLI args, accept loop, spawns threads
-├── server.cpp/hpp  — Socket setup: create, bind, listen, accept
-├── request.cpp/hpp — HTTP request parser: method, path, headers, body
-├── response.cpp/hpp— HTTP response builder: status codes, headers, body
-└── router.cpp/hpp  — Request routing: maps paths to handlers
+├── main.cpp            — Entry point: parses CLI args, accept loop, enqueues clients
+├── server.cpp/hpp      — Socket setup: create, bind, listen, accept
+├── request.cpp/hpp     — HTTP request parser: method, path, headers, body
+├── response.cpp/hpp    — HTTP response builder: status codes, headers, body
+├── router.cpp/hpp      — Request routing: maps paths to handlers
+└── threadpool.cpp/hpp  — Thread pool: fixed workers, mutex-protected task queue
 ```
 
 ### Request Lifecycle
@@ -33,8 +34,9 @@ src/
 ```
 Client connects (TCP 3-way handshake)
     └── accept() returns client_fd
-        └── std::thread spawned per client
-            └── while(true)
+        └── pool.enqueue(client_fd) — added to task queue
+            └── idle worker thread picks it up
+                └── while(true)
                 ├── recv() — read raw bytes
                 ├── parse_request() — extract method, path, headers, body
                 ├── route() — match path to handler
@@ -69,7 +71,10 @@ Client connects (TCP 3-way handshake)
 
 ### Concurrency
 - Why a single-threaded server blocks on one slow client
-- How `std::thread` with `.detach()` gives each client its own independent execution
+- Why unbounded thread-per-client doesn't scale — 10k clients = 10k threads, huge memory overhead
+- Thread pool pattern — pre-spawn N workers, queue incoming connections, idle threads sleep on a condition variable
+- How `std::condition_variable` works — workers block on `cv.wait()`, `notify_one()` wakes exactly one idle worker
+- Why the task queue needs a `std::mutex` — multiple threads reading/writing the queue is a race condition
 - Why `client_fd` and `directory_path` must be captured by value in the lambda — the outer loop moves on
 - Read-only shared state (like `directory_path`) is safe without locks — race conditions only happen on writes
 
